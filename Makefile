@@ -16,7 +16,7 @@ $(MODULE_LIB).o: $(MODULE_LIB).c
 	$(CC) $(CFLAGS) -Wall -pipe -DPIC -fPIC -g -O2 -o $@ -c $<
 
 clean:
-	make -C $(MODPATH/build/ M=$(PWD) clean
+	make -C $(MODPATH)/build/ M=$(PWD) clean
 	rm -f $(MODULE_LIB).so
 
 install:
