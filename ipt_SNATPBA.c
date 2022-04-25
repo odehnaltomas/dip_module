@@ -34,10 +34,13 @@ struct hashtable_cell {
 };
 
 struct rule_entry {
-    DECLARE_HASHTABLE(hash_blocks2, 10);
-    struct list_head all_blocks_list;
-    struct list_head available_blocks_list;
-    // struct hlist_head
+    DECLARE_HASHTABLE(rule_hashtable, 10);
+    struct list_head avl_blc_list;
+    struct list_head all_blc_list;
+    struct xt_snatpba_info info;
+    struct list_head list;
+
+    // int snatpba_info_set;
 };
 
 static LIST_HEAD(rule_list);
@@ -49,31 +52,21 @@ LIST_HEAD(all_blocks_list);          /* Only for effective free of blocks. */
 LIST_HEAD(available_blocks_list);    /* Free block ready for connections. */
 
 /* This is global variable because of snatpba_conntrack_event() handler. */
-struct xt_snat_pba_info snatpba_info;
+struct xt_snatpba_info snatpba_info;
 int snatpba_info_set = 0;
 
 
-static int xt_snat_pba_checkentry(const struct xt_tgchk_param *par) {
-    const struct xt_snat_pba_info *mr = par->targinfo;
+static int xt_snatpba_checkentry(const struct xt_tgchk_param *par) {
+    const struct xt_snatpba_info *mr = par->targinfo;
     int ip_num, blocks_num, blocks_num_per_ip, i, j;
     __be16 offset;
-
-    snatpba_info = *mr;
-    snatpba_info_set = 1;
-
     struct rule_entry *rule = kmalloc(sizeof(struct rule_entry), GFP_KERNEL);
-    hash_init(rule->hash_blocks2);
-    // struct rule_entry rule;
-    // hash_init(rule.hash_blocks2);
-
-    // DEFINE_HASHTABLE(hash_blocks, 10);
-
-    // LIST_HEAD(all_blocks_list);          /* Only for effective free of blocks. */
-    // LIST_HEAD(available_blocks_list);    /* Free block ready for connections. */
-
-    // /* This is global variable because of snatpba_conntrack_event() handler. */
-    // struct xt_snat_pba_info snatpba_info;
-    // int snatpba_info_set = 0;
+    
+    rule->avl_blc_list = (struct list_head)LIST_HEAD_INIT(rule->avl_blc_list);
+    rule->all_blc_list = (struct list_head)LIST_HEAD_INIT(rule->all_blc_list);
+    
+    hash_init(rule->rule_hashtable);
+    rule->info = *mr;
 
     printk(KERN_INFO "%s: --from-source: %pI4-%pI4, "
                 "--to-source: %pI4-%pI4, "
@@ -114,8 +107,8 @@ static int xt_snat_pba_checkentry(const struct xt_tgchk_param *par) {
             rec->block = block;
             rec_n->block = block;
 
-            list_add_tail(&rec->list, &available_blocks_list);
-            list_add_tail(&rec_n->list, &all_blocks_list);
+            list_add_tail(&rec->list, &rule->avl_blc_list);
+            list_add_tail(&rec_n->list, &rule->all_blc_list);
 
             // kfree(block);
             // kfree(rec_n);
@@ -124,8 +117,11 @@ static int xt_snat_pba_checkentry(const struct xt_tgchk_param *par) {
         offset = 0;
     }
 
+    /* Add rule resources into list with rules (of this target). */
+    list_add_tail(&rule->list, &rule_list);
+
     struct list_record *entry_data = NULL;
-    list_for_each_entry(entry_data, &all_blocks_list, list) {
+    list_for_each_entry(entry_data, &rule->all_blc_list, list) {
         struct snatpba_block *block = entry_data->block;
 
         printk(KERN_INFO "%s: ip addr: %pI4, port min: %u, port max: %u\n",
@@ -138,14 +134,14 @@ static int xt_snat_pba_checkentry(const struct xt_tgchk_param *par) {
     return nf_ct_netns_get(par->net, par->family);
 }
 
-static void xt_snat_pba_destroy(const struct xt_tgdtor_param *par) {
+static void xt_snatpba_destroy(const struct xt_tgdtor_param *par) {
     // TODO: uzamknout pres mutex, abych nemazal a nekdo jiny nazapisoval
     struct list_record *entry_data = NULL;
     struct hashtable_cell *hash_entry;
     int bkt;
-    const struct xt_snat_pba_info *mr = par->targinfo;
+    const struct xt_snatpba_info *mr = par->targinfo;
 
-    printk(KERN_INFO "%s: xt_snat_pba_destroy\n", THIS_MODULE->name);
+    printk(KERN_INFO "%s: xt_snatpba_destroy\n", THIS_MODULE->name);
     printk(KERN_INFO "%s: --from-source: %pI4-%pI4, "
                 "--to-source: %pI4-%pI4, "
                 "--block-size: %u", THIS_MODULE->name, 
@@ -295,63 +291,6 @@ static int snatpba_conntrack_event(unsigned int events, struct nf_ct_event *item
             }
             // TODO: unlock
         }
-    // if (events & (1 << IPCT_NEW)) {
-    //     printk(KERN_INFO "%s: IPCT_NEW\n", THIS_MODULE->name);
-    // }
-    // else if (events & (1 << IPCT_RELATED)) {
-    //     printk(KERN_INFO "%s: IPCT_RELATED\n", THIS_MODULE->name);
-    // }
-    // if (events & (1 << IPCT_DESTROY)) {
-    //     printk(KERN_INFO "%s: IPCT_DESTROY\n", THIS_MODULE->name);
-
-    //     // TODO: lock
-    //     if (hash_entry->block->free_ports < 20) {
-    //         hash_entry->block->free_ports++;
-    //     }
-    //     else if (hash_entry->block->free_ports == 20) {
-    //         /** 
-    //          * This could occure when target is accepted,
-    //          * but the connection track somehow is not ACCEPTed
-    //          * and is DESTROYed
-    //          */
-    //         del_conn_from_hashtable(hash_entry);
-    //     }
-
-    //     if (hash_entry->block->free_ports == 20) {
-    //         del_conn_from_hashtable(hash_entry);
-    //     }
-    //     // TODO: unlock
-    // }
-    // // else if (events & (1 << IPCT_REPLY)) {
-    // //     printk(KERN_INFO "%s: IPCT_REPLY\n", THIS_MODULE->name);
-    // // }
-    // // else if (events & (1 << IPCT_ASSURED)) {
-
-
-    // else if (events & (1 << IPCT_PROTOINFO)) {
-    //     printk(KERN_INFO "%s: IPCT_PROTOINFO\n", THIS_MODULE->name);
-    // }
-    // else if (events & (1 << IPCT_HELPER)) {
-    //     printk(KERN_INFO "%s: IPCT_HELPER\n", THIS_MODULE->name);
-    // }
-    // else if (events & (1 << IPCT_MARK)) {
-    //     printk(KERN_INFO "%s: IPCT_MARK\n", THIS_MODULE->name);
-    // }
-    // else if (events & (1 << IPCT_SEQADJ)) {
-    //     printk(KERN_INFO "%s: IPCT_SEQADJ\n", THIS_MODULE->name);
-    // }
-    // else if (events & (1 << IPCT_SECMARK)) {
-    //     printk(KERN_INFO "%s: IPCT_SECMARK\n", THIS_MODULE->name);
-    // }
-    // else if (events & (1 << IPCT_LABEL)) {
-    //     printk(KERN_INFO "%s: IPCT_LABEL\n", THIS_MODULE->name);
-    // }
-    // else if (events & (1 << IPCT_SYNPROXY)) {
-    //     printk(KERN_INFO "%s: IPCT_SYNPROXY\n", THIS_MODULE->name);
-    // }
-    // else {
-    //     printk(KERN_INFO "%s: OTHER CT EVENT\n", THIS_MODULE->name);
-    // }
 
     }
     printk(KERN_INFO "%s: tuple %p: %u %pI4:%hu -> %pI4:%hu\n",
@@ -471,16 +410,34 @@ static void xt_nat_convert_range(struct nf_nat_range2 *dst,
 }
 
 static unsigned int 
-xt_snat_pba_target(struct sk_buff *skb, const struct xt_action_param *par) {
-    // const struct nf_nat_ipv4_multi_range_compat *mr = par->targinfo;
+xt_snatpba_target(struct sk_buff *skb, const struct xt_action_param *par) {
+    const struct xt_snatpba_info *mr = par->targinfo;
 	struct nf_nat_range2 range;
 	enum ip_conntrack_info ctinfo;
 	struct nf_conn *ct;
     struct hashtable_cell *curr = NULL;
+    struct rule_entry *rule = NULL;
     struct iphdr *ip_header = (struct iphdr *)skb_network_header(skb);
     // int ret;
 
     unsigned long long this_key = ip_header->saddr;
+
+    list_for_each_entry(rule, &rule_list, list) {
+        if (rule->info.to_src.range->min_ip == 
+            mr->to_src.range->min_ip && 
+            rule->info.to_src.range->max_ip ==
+            mr->to_src.range->max_ip) {
+                printk(KERN_INFO "%s: target --from-source: %pI4-%pI4, "
+                                "--to-source: %pI4-%pI4, "
+                                "--block-size: %u\n", THIS_MODULE->name, 
+                            &mr->from_src.min_ip, &mr->from_src.max_ip,
+                            &mr->to_src.range->min_ip, &mr->to_src.range->max_ip,
+                            mr->block_size);
+                printk(KERN_INFO "%s: target packet src: %pI4, dst:%pI4\n",
+                        THIS_MODULE->name, &ip_header->saddr, &ip_header->daddr);
+                break;
+            }
+    }
 
     printk(KERN_INFO "%s: prisel paket do targetu\n", THIS_MODULE->name);
     printk(KERN_INFO "%s: %llu\n", THIS_MODULE->name, this_key);
@@ -522,13 +479,13 @@ xt_snat_pba_target(struct sk_buff *skb, const struct xt_action_param *par) {
 	return nf_nat_setup_info(ct, &range, NF_NAT_MANIP_SRC);
 }
 
-static struct xt_target xt_snat_pba_target_reg[] __read_mostly = {
+static struct xt_target xt_snatpba_target_reg[] __read_mostly = {
     {
         .name       = "SNATPBA",
-        .checkentry = xt_snat_pba_checkentry,
-        .destroy    = xt_snat_pba_destroy,
-        .target     = xt_snat_pba_target,
-        .targetsize = sizeof(struct xt_snat_pba_info),
+        .checkentry = xt_snatpba_checkentry,
+        .destroy    = xt_snatpba_destroy,
+        .target     = xt_snatpba_target,
+        .targetsize = sizeof(struct xt_snatpba_info),
         .family     = NFPROTO_IPV4,
         .table      = "nat",
         .hooks      = (1 << NF_INET_POST_ROUTING) |
@@ -537,24 +494,24 @@ static struct xt_target xt_snat_pba_target_reg[] __read_mostly = {
     },
 };
 
-static int __init xt_snat_pba_init(void) {
+static int __init xt_snatpba_init(void) {
     printk(KERN_INFO "%s: Pred inicializaci notifieru.\n", THIS_MODULE->name);
     register_ct_events();
 
     printk(KERN_INFO "%s: Module initialized.\n", THIS_MODULE->name);
-    return xt_register_targets(xt_snat_pba_target_reg,
-                               ARRAY_SIZE(xt_snat_pba_target_reg));
+    return xt_register_targets(xt_snatpba_target_reg,
+                               ARRAY_SIZE(xt_snatpba_target_reg));
 }
 
-static void __exit xt_snat_pba_exit(void) {
+static void __exit xt_snatpba_exit(void) {
     unregister_ct_events();
 
     printk(KERN_INFO "%s: Cleaning up module.\n", THIS_MODULE->name);
-    xt_unregister_targets(xt_snat_pba_target_reg, ARRAY_SIZE(xt_snat_pba_target_reg));
+    xt_unregister_targets(xt_snatpba_target_reg, ARRAY_SIZE(xt_snatpba_target_reg));
 }
 
-module_init(xt_snat_pba_init);
-module_exit(xt_snat_pba_exit);
+module_init(xt_snatpba_init);
+module_exit(xt_snatpba_exit);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Tomas Odehnal <xodehn08@stud.fit.vutbr.cz>");
