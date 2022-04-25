@@ -33,11 +33,20 @@ struct hashtable_cell {
     struct hlist_node       node;
 };
 
+struct rule_entry {
+    DECLARE_HASHTABLE(hash_blocks2, 10);
+    struct list_head all_blocks_list;
+    struct list_head available_blocks_list;
+    // struct hlist_head
+};
+
+static LIST_HEAD(rule_list);
+
 
 DEFINE_HASHTABLE(hash_blocks, 10);
 
-static LIST_HEAD(all_blocks_list);          /* Only for effective free of blocks. */
-static LIST_HEAD(available_blocks_list);    /* Free block ready for connections. */
+LIST_HEAD(all_blocks_list);          /* Only for effective free of blocks. */
+LIST_HEAD(available_blocks_list);    /* Free block ready for connections. */
 
 /* This is global variable because of snatpba_conntrack_event() handler. */
 struct xt_snat_pba_info snatpba_info;
@@ -51,6 +60,20 @@ static int xt_snat_pba_checkentry(const struct xt_tgchk_param *par) {
 
     snatpba_info = *mr;
     snatpba_info_set = 1;
+
+    struct rule_entry *rule = kmalloc(sizeof(struct rule_entry), GFP_KERNEL);
+    hash_init(rule->hash_blocks2);
+    // struct rule_entry rule;
+    // hash_init(rule.hash_blocks2);
+
+    // DEFINE_HASHTABLE(hash_blocks, 10);
+
+    // LIST_HEAD(all_blocks_list);          /* Only for effective free of blocks. */
+    // LIST_HEAD(available_blocks_list);    /* Free block ready for connections. */
+
+    // /* This is global variable because of snatpba_conntrack_event() handler. */
+    // struct xt_snat_pba_info snatpba_info;
+    // int snatpba_info_set = 0;
 
     printk(KERN_INFO "%s: --from-source: %pI4-%pI4, "
                 "--to-source: %pI4-%pI4, "
@@ -120,8 +143,16 @@ static void xt_snat_pba_destroy(const struct xt_tgdtor_param *par) {
     struct list_record *entry_data = NULL;
     struct hashtable_cell *hash_entry;
     int bkt;
+    const struct xt_snat_pba_info *mr = par->targinfo;
 
-    printk(KERN_INFO "%s::xt_snat_pba_destroy\n", THIS_MODULE->name);
+    printk(KERN_INFO "%s: xt_snat_pba_destroy\n", THIS_MODULE->name);
+    printk(KERN_INFO "%s: --from-source: %pI4-%pI4, "
+                "--to-source: %pI4-%pI4, "
+                "--block-size: %u", THIS_MODULE->name, 
+            &mr->from_src.min_ip, &mr->from_src.max_ip,
+            &mr->to_src.range->min_ip, &mr->to_src.range->max_ip,
+            mr->block_size);
+
     while (!list_empty(&all_blocks_list)) {
         entry_data = list_entry(all_blocks_list.next, struct list_record, list);
         kfree(entry_data->block);
