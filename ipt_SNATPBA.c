@@ -55,6 +55,8 @@ static LIST_HEAD(rule_list);
 // struct xt_snatpba_info snatpba_info;
 int at_least_one_rule = 0;
 
+static DEFINE_MUTEX(data_lock);
+
 
 static int xt_snatpba_checkentry(const struct xt_tgchk_param *par) {
     const struct xt_snatpba_info *mr = par->targinfo;
@@ -118,9 +120,11 @@ static int xt_snatpba_checkentry(const struct xt_tgchk_param *par) {
     }
 
     /* Add rule resources into list with rules (of this target). */
+    mutex_lock(&data_lock);
     list_add_tail(&rule->list, &rule_list);
 
     at_least_one_rule = 1;
+    mutex_unlock(&data_lock);
 
     struct list_record *entry_data = NULL;
     list_for_each_entry(entry_data, &rule->all_blc_list, list) {
@@ -249,6 +253,8 @@ static int snatpba_conntrack_event(unsigned int events, struct nf_ct_event *item
 
     if (events & (1 << IPCT_DESTROY) ||
             events & (1 << IPCT_ASSURED)) {
+        mutex_lock(&data_lock);
+
         list_for_each_entry(rule, &rule_list, list) {
             if (ntohl(ct_tuple2->dst.u3.ip) >= 
                         ntohl(rule->info.to_src.range->min_ip) && 
@@ -299,11 +305,11 @@ static int snatpba_conntrack_event(unsigned int events, struct nf_ct_event *item
                     if (hash_entry->block->free_ports == 20) {
                         del_conn_from_hashtable(rule, hash_entry);
                     }
-                    // TODO: unlock
                 }
                 // TODO: unlock
                 break;
             }
+            mutex_unlock(&data_lock);
             
         }
 
@@ -435,6 +441,8 @@ xt_snatpba_target(struct sk_buff *skb, const struct xt_action_param *par) {
     struct iphdr *ip_header = (struct iphdr *)skb_network_header(skb);
     // int ret;
 
+    mutex_lock(&data_lock);
+
     list_for_each_entry(rule, &rule_list, list) {
         if (rule->info.to_src.range->min_ip == 
             mr->to_src.range->min_ip && 
@@ -491,6 +499,8 @@ xt_snatpba_target(struct sk_buff *skb, const struct xt_action_param *par) {
             ntohs(curr->block->new_src.range->min.tcp.port), ntohs(curr->block->new_src.range->max.tcp.port));
             
 	xt_nat_convert_range(&range, &curr->block->new_src.range[0]);
+
+    mutex_unlock(&data_lock);
 	return nf_nat_setup_info(ct, &range, NF_NAT_MANIP_SRC);
 }
 
