@@ -57,7 +57,6 @@ int at_least_one_rule = 0;
 
 static DEFINE_MUTEX(data_lock);
 
-
 static int xt_snatpba_checkentry(const struct xt_tgchk_param *par) {
     const struct xt_snatpba_info *mr = par->targinfo;
     int ip_num, blocks_num, blocks_num_per_ip, i, j;
@@ -136,16 +135,15 @@ static int xt_snatpba_checkentry(const struct xt_tgchk_param *par) {
                 ntohs(block->new_src.range->max.tcp.port));
     }
 
-    // TODO: vypocitat a alokovat bloky pro spojeni a dat je do obou seznamu
     return nf_ct_netns_get(par->net, par->family);
 }
 
 static void xt_snatpba_destroy(const struct xt_tgdtor_param *par) {
-    // TODO: uzamknout pres mutex, abych nemazal a nekdo jiny nazapisoval
     struct list_record *entry_data = NULL;
     struct hashtable_cell *hash_entry;
     int bkt;
     const struct xt_snatpba_info *mr = par->targinfo;
+    struct rule_entry *rule = NULL;
 
     printk(KERN_INFO "%s: xt_snatpba_destroy\n", THIS_MODULE->name);
     printk(KERN_INFO "%s: --from-source: %pI4-%pI4, "
@@ -154,7 +152,11 @@ static void xt_snatpba_destroy(const struct xt_tgdtor_param *par) {
             &mr->from_src.min_ip, &mr->from_src.max_ip,
             &mr->to_src.range->min_ip, &mr->to_src.range->max_ip,
             mr->block_size);
+    mutex_lock(&data_lock);
 
+    list_for_each_entry(rule, &rule_list, list) {
+        
+    }
     // while (!list_empty(&all_blocks_list)) {
     //     entry_data = list_entry(all_blocks_list.next, struct list_record, list);
     //     kfree(entry_data->block);
@@ -181,7 +183,7 @@ static void xt_snatpba_destroy(const struct xt_tgdtor_param *par) {
     // }
     
 
-    // TODO: uvolnit hashtable
+    mutex_unlock(&data_lock);
     nf_ct_netns_put(par->net, par->family);
 }
 
@@ -202,9 +204,7 @@ add_conn_to_hashtable(struct rule_entry *rule, __be32 saddr, __be32 daddr,
     struct list_record *list_entry;
     struct hashtable_cell *new_hash_entry = kmalloc(sizeof(struct hashtable_cell), GFP_KERNEL);
 
-    // TODO: mutex
     if (list_empty(&rule->avl_blc_list)) {
-        // TODO: unlock
         return NULL;
     }
 
@@ -220,7 +220,6 @@ add_conn_to_hashtable(struct rule_entry *rule, __be32 saddr, __be32 daddr,
     list_entry->block = NULL;
     list_del(&list_entry->list);
     kfree(list_entry);
-    // TODO: unlock
     return new_hash_entry;
 }
 
