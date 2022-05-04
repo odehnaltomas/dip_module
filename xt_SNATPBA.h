@@ -19,7 +19,7 @@ struct xt_snatpba_info {
     uint8_t                                 from_src_mask;  /* Mask of from_src_in address (--from-source). */
 
     /* Range of address from internal addresses. Example: --from-source=10.0.0.0/24 -> range=10.0.0.0-10.0.0.255 */
-    struct nf_nat_ipv4_range                from_src;       
+    struct nf_nat_ipv4_range                from_src;
     struct nf_nat_ipv4_multi_range_compat   to_src;     /* Range of the external addresses (external address pool). */
     __u32                                   block_size; /* Size of one block (number of available ports). */
 };

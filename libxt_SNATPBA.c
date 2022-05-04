@@ -22,8 +22,7 @@ static void SNAT_PBA_help(void) {
 "SNATPBA target options:\n"
 "   --from-source <ipaddr>[/<mask>]     Address of source (internal network).\n"
 "   --to-source <ipaddr>[-<ipaddr>]     Address to map source to.\n"
-"   --block-size <value>                Size of block for one station.\n"
-);
+"   --block-size <value>                Size of block for one station.\n");
 }
 
 /**
@@ -92,7 +91,7 @@ static void parse_to_src(const char *arg, struct nf_nat_ipv4_range *range) {
  * @param cb    Pointer to structure that contains data of the current parameter.
  */
 static void SNAT_PBA_parse(struct xt_option_call *cb) {
-    struct xt_snat_pba_info *info = cb->data;
+    struct xt_snatpba_info *info = cb->data;
     const struct ipt_entry *xt_entry = cb->xt_entry;
 
     xtables_option_parse(cb);
@@ -138,7 +137,7 @@ static void SNAT_PBA_parse(struct xt_option_call *cb) {
  */
 static void SNAT_PBA_print(const void *ip, const struct xt_entry_target *target,
                            int numeric) {
-    const struct xt_snat_pba_info *info = (const struct xt_snat_pba_info *)target->data;
+    const struct xt_snatpba_info *info = (const struct xt_snatpba_info *)target->data;
     
     printf(" SNATPBA");
     if (info->options & XT_SNATPBA_FROM_SRC) {
@@ -165,7 +164,7 @@ static void SNAT_PBA_print(const void *ip, const struct xt_entry_target *target,
  * Is called at 'iptables -S'.
  */
 static void SNAT_PBA_save(const void *ip, const struct xt_entry_target *target) {
-    const struct xt_snat_pba_info *info = 
+    const struct xt_snatpba_info *info = 
                             (const void *)target->data;
     if (info->options & XT_SNATPBA_FROM_SRC) {
         printf(" --from-source %s/%u", inet_ntoa(info->from_src_in), info->from_src_mask);
@@ -193,8 +192,8 @@ static struct xtables_target snat_pba_tg_reg = {
     .name           = "SNATPBA",
     .version        = XTABLES_VERSION,
     .family         = NFPROTO_IPV4,
-    .size           = XT_ALIGN(sizeof(struct xt_snat_pba_info)),
-    .userspacesize  = XT_ALIGN(sizeof(struct xt_snat_pba_info)),
+    .size           = XT_ALIGN(sizeof(struct xt_snatpba_info)),
+    .userspacesize  = XT_ALIGN(sizeof(struct xt_snatpba_info)),
     .help           = SNAT_PBA_help,
     .x6_parse       = SNAT_PBA_parse,
     .print          = SNAT_PBA_print,
