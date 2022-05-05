@@ -17,7 +17,9 @@
 struct snatpba_block {
     /* New source IP address (public network) and port range (calculated). */
     struct nf_nat_ipv4_multi_range_compat   new_src;
-    int     free_ports; /* Number of ports that are still free to use. */
+
+    /* Number of ports that are still free to use. */
+    int                                     free_ports;
 };
 
 struct list_record {
@@ -313,14 +315,14 @@ static int snatpba_conntrack_event(unsigned int events, struct nf_ct_event *item
         }
 
     }
-    printk(KERN_INFO "%s: tuple %p: %u %pI4:%hu -> %pI4:%hu\n",
-	       THIS_MODULE->name, ct_tuple, ct_tuple->dst.protonum,
-	       &ct_tuple->src.u3.ip, ntohs(ct_tuple->src.u.all),
-	       &ct_tuple->dst.u3.ip, ntohs(ct_tuple->dst.u.all));
-    printk(KERN_INFO "%s: tuple %p: %u %pI4:%hu -> %pI4:%hu\n",
-	       THIS_MODULE->name, ct_tuple2, ct_tuple2->dst.protonum,
-	       &ct_tuple2->src.u3.ip, ntohs(ct_tuple2->src.u.all),
-	       &ct_tuple2->dst.u3.ip, ntohs(ct_tuple2->dst.u.all));
+    // printk(KERN_INFO "%s: tuple orig %p: %u %pI4:%hu -> %pI4:%hu\n",
+	//        THIS_MODULE->name, ct_tuple, ct_tuple->dst.protonum,
+	//        &ct_tuple->src.u3.ip, ntohs(ct_tuple->src.u.all),
+	//        &ct_tuple->dst.u3.ip, ntohs(ct_tuple->dst.u.all));
+    // printk(KERN_INFO "%s: tuple repl %p: %u %pI4:%hu -> %pI4:%hu\n",
+	//        THIS_MODULE->name, ct_tuple2, ct_tuple2->dst.protonum,
+	//        &ct_tuple2->src.u3.ip, ntohs(ct_tuple2->src.u.all),
+	//        &ct_tuple2->dst.u3.ip, ntohs(ct_tuple2->dst.u.all));
 
     return NOTIFY_DONE;
 }
@@ -482,7 +484,7 @@ xt_snatpba_target(struct sk_buff *skb, const struct xt_action_param *par) {
 
         if (!curr) {
             kfree(curr);
-            return NF_DROP; // TODO: NF_ACCEPT or NF_DROP
+            return NF_DROP;
         }
         printk(KERN_INFO "%s: connection for key: %llu added into hashtable.\n",
                         THIS_MODULE->name, curr->key);
