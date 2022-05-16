@@ -223,13 +223,13 @@ static void xt_snatpba_destroy(const struct xt_tgdtor_param *par) {
                             &mr->from_src.min_ip, &mr->from_src.max_ip,
                             &mr->to_src.range->min_ip, &mr->to_src.range->max_ip,
                             mr->block_size);
-
                 }
 
                 mutex_unlock(&data_lock);
                 return nf_ct_netns_put(par->net, par->family);
             }
     }
+
 }
 
 static void
@@ -381,7 +381,6 @@ static int snatpba_conntrack_event(unsigned int events, struct nf_ct_event *item
         mutex_unlock(&data_lock);
 
     }
-
     return NOTIFY_DONE;
 }
 
