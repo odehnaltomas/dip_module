@@ -9,23 +9,19 @@
 #include "xt_SNATPBA.h"
 
 enum {
-    O_FROM_SRC = 0,
-    O_TO_SRC,
+    O_TO_SRC = 0,
     O_BLOCK_SIZE,
 };
 
 static void SNAT_PBA_help(void) {
     printf(
 "SNATPBA target options:\n"
-"   --from-source <ipaddr>[/<mask>]     Address of source (internal network).\n"
 "   --to-source <ipaddr>[-<ipaddr>]     Address to map source to.\n"
 "   --block-size <value>                Size of block for one station.\n"
 );
 }
 
 static const struct xt_option_entry SNAT_PBA_opts[] = {
-    {.name = "from-source", .id = O_FROM_SRC, .type = XTTYPE_HOSTMASK,
-     .flags = XTOPT_MAND},
     {.name = "to-source", .id = O_TO_SRC, .type = XTTYPE_STRING,
      .flags = XTOPT_MAND},
     {.name = "block-size", .id = O_BLOCK_SIZE, .type = XTTYPE_UINT32,
@@ -72,26 +68,11 @@ static void parse_to_src(const char *arg, struct nf_nat_ipv4_range *range) {
 }
 
 static void SNAT_PBA_parse(struct xt_option_call *cb) {
-    struct xt_snat_pba_info *info = cb->data;
+    struct xt_snatpba_info *info = cb->data;
     const struct ipt_entry *xt_entry = cb->xt_entry;
 
     xtables_option_parse(cb);
     switch(cb->entry->id) {
-        case O_FROM_SRC:
-            info->options |= XT_SNATPBA_FROM_SRC;
-
-            info->from_src_in = cb->val.haddr.in;
-            info->from_src_mask = cb->val.hlen;
-
-            /* Min address of range. (--from-source) */
-            info->from_src.min_ip = cb->val.haddr.in.s_addr;
-
-            struct in_addr tmp_in = cb->val.haddr.in;
-            tmp_in.s_addr += ~cb->val.hmask.in.s_addr;
-
-            /* Max address of range (--from-source) */
-            info->from_src.max_ip = tmp_in.s_addr;
-            break;
         case O_TO_SRC:
             info->options |= XT_SNATPBA_TO_SRC;
 
@@ -114,12 +95,9 @@ static void SNAT_PBA_parse(struct xt_option_call *cb) {
 
 static void SNAT_PBA_print(const void *ip, const struct xt_entry_target *target,
                            int numeric) {
-    const struct xt_snat_pba_info *info = (const struct xt_snat_pba_info *)target->data;
+    const struct xt_snatpba_info *info = (const struct xt_snatpba_info *)target->data;
     
     printf(" SNATPBA");
-    if (info->options & XT_SNATPBA_FROM_SRC) {
-        printf(" from-source:%s/%u", inet_ntoa(info->from_src_in), info->from_src_mask);
-    }
     if (info->options & XT_SNATPBA_TO_SRC) {
         printf(" to-source:");
         struct in_addr min = {.s_addr = info->to_src.range->min_ip};
@@ -137,11 +115,8 @@ static void SNAT_PBA_print(const void *ip, const struct xt_entry_target *target,
 }
 
 static void SNAT_PBA_save(const void *ip, const struct xt_entry_target *target) {
-    const struct xt_snat_pba_info *info = 
+    const struct xt_snatpba_info *info = 
                             (const void *)target->data;
-    if (info->options & XT_SNATPBA_FROM_SRC) {
-        printf(" --from-source %s/%u", inet_ntoa(info->from_src_in), info->from_src_mask);
-    }
 
     if (info->options & XT_SNATPBA_TO_SRC) {
         printf(" --to-source ");
@@ -164,8 +139,8 @@ static struct xtables_target snat_pba_tg_reg = {
     .name           = "SNATPBA",
     .version        = XTABLES_VERSION,
     .family         = NFPROTO_IPV4,
-    .size           = XT_ALIGN(sizeof(struct xt_snat_pba_info)),
-    .userspacesize  = XT_ALIGN(sizeof(struct xt_snat_pba_info)),
+    .size           = XT_ALIGN(sizeof(struct xt_snatpba_info)),
+    .userspacesize  = XT_ALIGN(sizeof(struct xt_snatpba_info)),
     .help           = SNAT_PBA_help,
     .x6_parse       = SNAT_PBA_parse,
     .print          = SNAT_PBA_print,

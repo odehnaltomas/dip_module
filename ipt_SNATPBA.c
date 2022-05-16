@@ -10,6 +10,7 @@
 #include <linux/list.h>
 #include <linux/byteorder/little_endian.h>
 #include <linux/vmalloc.h>
+#include <asm/atomic.h>
 #include "xt_SNATPBA.h"
 
 #define MAX_PORTS_PER_IP 64512 /* 65536 - 1024 */
@@ -17,7 +18,9 @@
 struct snatpba_block {
     /* New source IP address (public network) and port range (calculated). */
     struct nf_nat_ipv4_multi_range_compat   new_src;
-    int     free_ports; /* Number of ports that are still free to use. */
+
+    /* Number of ports that are still free to use. */
+    int                                     free_ports;
 };
 
 struct list_record {
@@ -35,10 +38,12 @@ struct hashtable_cell {
 
 struct rule_entry {
     DECLARE_HASHTABLE(rule_hashtable, 10);
-    struct list_head avl_blc_list;
-    struct list_head all_blc_list;
-    struct xt_snatpba_info info;
+    struct list_head avl_blc_list;      /* List of available blocks. */
+    struct list_head all_blc_list;      /* List of all allocated blocks (one rule). */
+    struct xt_snatpba_info info;        /*  */
     struct list_head list;
+
+    atomic_t ref;
 
     // int snatpba_info_set;
 };
@@ -57,12 +62,36 @@ int at_least_one_rule = 0;
 
 static DEFINE_MUTEX(data_lock);
 
-
 static int xt_snatpba_checkentry(const struct xt_tgchk_param *par) {
     const struct xt_snatpba_info *mr = par->targinfo;
     int ip_num, blocks_num, blocks_num_per_ip, i, j;
     __be16 offset;
-    struct rule_entry *rule = kmalloc(sizeof(struct rule_entry), GFP_KERNEL);
+    struct rule_entry *rule = NULL;
+    // struct list_record *entry_data = NULL;
+
+    mutex_lock(&data_lock);
+    list_for_each_entry(rule, &rule_list, list) {
+        if (rule->info.to_src.range->min_ip == 
+            mr->to_src.range->min_ip && 
+            rule->info.to_src.range->max_ip ==
+            mr->to_src.range->max_ip) {
+                // printk(KERN_INFO "%s: found rule: increment ref --from-source: %pI4-%pI4, "
+                //                 "--to-source: %pI4-%pI4, "
+                //                 "--block-size: %u\n", THIS_MODULE->name, 
+                //             &mr->from_src.min_ip, &mr->from_src.max_ip,
+                //             &mr->to_src.range->min_ip, &mr->to_src.range->max_ip,
+                //             mr->block_size);
+                // printk(KERN_INFO "%s: target packet src: %pI4, dst:%pI4\n",
+                //         THIS_MODULE->name, &ip_header->saddr, &ip_header->daddr);
+                atomic_inc(&rule->ref);
+                mutex_unlock(&data_lock);
+                return nf_ct_netns_get(par->net, par->family);
+            }
+    }
+    mutex_unlock(&data_lock);
+
+    rule = kmalloc(sizeof(struct rule_entry), GFP_KERNEL);
+
     
     rule->avl_blc_list = (struct list_head)LIST_HEAD_INIT(rule->avl_blc_list);
     rule->all_blc_list = (struct list_head)LIST_HEAD_INIT(rule->all_blc_list);
@@ -70,7 +99,9 @@ static int xt_snatpba_checkentry(const struct xt_tgchk_param *par) {
     hash_init(rule->rule_hashtable);
     rule->info = *mr;
 
-    printk(KERN_INFO "%s: --from-source: %pI4-%pI4, "
+    atomic_set(&rule->ref, 1);
+
+    printk(KERN_INFO "%s: new rule --from-source: %pI4-%pI4, "
                 "--to-source: %pI4-%pI4, "
                 "--block-size: %u", THIS_MODULE->name, 
             &mr->from_src.min_ip, &mr->from_src.max_ip,
@@ -80,8 +111,8 @@ static int xt_snatpba_checkentry(const struct xt_tgchk_param *par) {
     blocks_num_per_ip = MAX_PORTS_PER_IP / mr->block_size;
     blocks_num = ip_num * blocks_num_per_ip;
 
-    printk(KERN_INFO "%s: ip_num %d, blocks_num_per_ip: %d, blocks_num: %d\n",
-            THIS_MODULE->name, ip_num, blocks_num_per_ip, blocks_num);
+    // printk(KERN_INFO "%s: ip_num %d, blocks_num_per_ip: %d, blocks_num: %d\n",
+    //         THIS_MODULE->name, ip_num, blocks_num_per_ip, blocks_num);
 
     offset = 0;
     for (i = 0; i < ip_num; i++) {
@@ -96,7 +127,7 @@ static int xt_snatpba_checkentry(const struct xt_tgchk_param *par) {
             block->new_src.range->max.tcp.port = htons(offset);
 
             block->new_src.range->min_ip = mr->to_src.range->min_ip + htonl(i);
-            block->new_src.range->max_ip = mr->to_src.range->max_ip + htonl(i);
+            block->new_src.range->max_ip = mr->to_src.range->min_ip + htonl(i);
 
             block->free_ports = mr->block_size;
             // printk(KERN_INFO "%s: ip addr: %pI4, port min: %u, port max: %u\n",
@@ -124,65 +155,81 @@ static int xt_snatpba_checkentry(const struct xt_tgchk_param *par) {
     list_add_tail(&rule->list, &rule_list);
 
     at_least_one_rule = 1;
+
+    // list_for_each_entry(entry_data, &rule->all_blc_list, list) {
+    //     struct snatpba_block *block = entry_data->block;
+
+    //     printk(KERN_INFO "%s: ip addr: %pI4, port min: %u, port max: %u\n",
+    //             THIS_MODULE->name, &block->new_src.range->min_ip,
+    //             ntohs(block->new_src.range->min.tcp.port),
+    //             ntohs(block->new_src.range->max.tcp.port));
+    // }
+
     mutex_unlock(&data_lock);
 
-    struct list_record *entry_data = NULL;
-    list_for_each_entry(entry_data, &rule->all_blc_list, list) {
-        struct snatpba_block *block = entry_data->block;
-
-        printk(KERN_INFO "%s: ip addr: %pI4, port min: %u, port max: %u\n",
-                THIS_MODULE->name, &block->new_src.range->min_ip,
-                ntohs(block->new_src.range->min.tcp.port),
-                ntohs(block->new_src.range->max.tcp.port));
-    }
-
-    // TODO: vypocitat a alokovat bloky pro spojeni a dat je do obou seznamu
     return nf_ct_netns_get(par->net, par->family);
 }
 
 static void xt_snatpba_destroy(const struct xt_tgdtor_param *par) {
-    // TODO: uzamknout pres mutex, abych nemazal a nekdo jiny nazapisoval
     struct list_record *entry_data = NULL;
     struct hashtable_cell *hash_entry;
     int bkt;
     const struct xt_snatpba_info *mr = par->targinfo;
+    struct rule_entry *rule = NULL;
 
-    printk(KERN_INFO "%s: xt_snatpba_destroy\n", THIS_MODULE->name);
-    printk(KERN_INFO "%s: --from-source: %pI4-%pI4, "
-                "--to-source: %pI4-%pI4, "
-                "--block-size: %u", THIS_MODULE->name, 
-            &mr->from_src.min_ip, &mr->from_src.max_ip,
-            &mr->to_src.range->min_ip, &mr->to_src.range->max_ip,
-            mr->block_size);
+    mutex_lock(&data_lock);
 
-    // while (!list_empty(&all_blocks_list)) {
-    //     entry_data = list_entry(all_blocks_list.next, struct list_record, list);
-    //     kfree(entry_data->block);
-    //     list_del(&entry_data->list);
-    //     kfree(entry_data);
-    // }
+    list_for_each_entry(rule, &rule_list, list) {
+        if (rule->info.to_src.range->min_ip == 
+            mr->to_src.range->min_ip && 
+            rule->info.to_src.range->max_ip ==
+            mr->to_src.range->max_ip) {
+                // printk(KERN_INFO "%s: target packet src: %pI4, dst:%pI4\n",
+                //         THIS_MODULE->name, &ip_header->saddr, &ip_header->daddr);
 
-    // while (!list_empty(&available_blocks_list)) {
-    //     entry_data = list_entry(available_blocks_list.next, struct list_record, list);
-    //     list_del(&entry_data->list);
-    //     kfree(entry_data);
-    // }
+                /* Check if ref value is 0 and should be removed. */
+                if(atomic_dec_and_test(&rule->ref)) {
+                    while (!list_empty(&rule->all_blc_list)) {
+                        entry_data = list_entry(rule->all_blc_list.next, struct list_record, list);
+                        kfree(entry_data->block);
+                        list_del(&entry_data->list);
+                        kfree(entry_data);
+                    }
 
-    // /**
-    //  * There is probably better way to safely remove all entries,
-    //  * but i didn't find any.
-    //  */
-    // while (!hash_empty(hash_blocks)) {
-    //     hash_for_each(hash_blocks, bkt, hash_entry, node) {
-    //         break;
-    //     }
-    //     hash_del(&hash_entry->node);
-    //     kfree(hash_entry);
-    // }
-    
+                    while (!list_empty(&rule->avl_blc_list)) {
+                        entry_data = list_entry(rule->avl_blc_list.next, struct list_record, list);
+                        list_del(&entry_data->list);
+                        kfree(entry_data);
+                    }
 
-    // TODO: uvolnit hashtable
-    nf_ct_netns_put(par->net, par->family);
+                    /**
+                     * There is probably better way to safely remove all entries,
+                     * but i didn't find any.
+                     */
+                    while (!hash_empty(rule->rule_hashtable)) {
+                        hash_for_each(rule->rule_hashtable, bkt, hash_entry, node) {
+                            break;
+                        }
+                        hash_del(&hash_entry->node);
+                        kfree(hash_entry);
+                    }
+
+                    list_del(&rule->list);
+                    kfree(rule);
+
+                    printk(KERN_INFO "%s: rule --from-source: %pI4-%pI4, "
+                                "--to-source: %pI4-%pI4, "
+                                "--block-size: %u was removed.\n", THIS_MODULE->name, 
+                            &mr->from_src.min_ip, &mr->from_src.max_ip,
+                            &mr->to_src.range->min_ip, &mr->to_src.range->max_ip,
+                            mr->block_size);
+
+                }
+
+                mutex_unlock(&data_lock);
+                return nf_ct_netns_put(par->net, par->family);
+            }
+    }
 }
 
 static void
@@ -192,19 +239,30 @@ del_conn_from_hashtable(struct rule_entry *rule, struct hashtable_cell *el) {
 
     list_add_tail(&new_rec->list, &rule->avl_blc_list);
 
+    printk(KERN_INFO "%s: del:%pI4:%pI4:%u-%u\n", THIS_MODULE->name, 
+                &el->orig_src_ip, &el->block->new_src.range->min_ip,
+                ntohs(el->block->new_src.range->min.tcp.port),
+                ntohs(el->block->new_src.range->max.tcp.port));
+
     hash_del(&el->node);
     kfree(el);
 }
 
+/**
+ * 
+ * @param struct rule_entry* rule   : Pointer to representation of the SNATPBA rule in this module.
+ * @param __be32 saddr              : Original internal source IP address (in network order). 
+ * @param __be32 daddr              : External destination IP address (in network order).
+ * @param unsigned long long entry_key  : Calculated key that is used to find new cell in hash table.
+ * @return struct hashtable_cell*   : Pointer to new allocated cell in hash table of the rule 'rule'.
+ */
 static struct hashtable_cell *
 add_conn_to_hashtable(struct rule_entry *rule, __be32 saddr, __be32 daddr,
                       unsigned long long entry_key) {
     struct list_record *list_entry;
     struct hashtable_cell *new_hash_entry = kmalloc(sizeof(struct hashtable_cell), GFP_KERNEL);
 
-    // TODO: mutex
     if (list_empty(&rule->avl_blc_list)) {
-        // TODO: unlock
         return NULL;
     }
 
@@ -220,7 +278,6 @@ add_conn_to_hashtable(struct rule_entry *rule, __be32 saddr, __be32 daddr,
     list_entry->block = NULL;
     list_del(&list_entry->list);
     kfree(list_entry);
-    // TODO: unlock
     return new_hash_entry;
 }
 
@@ -234,6 +291,7 @@ static int snatpba_conntrack_event(unsigned int events, struct nf_ct_event *item
     unsigned long long this_key = 0;
     int ret = NOTIFY_DONE;
     struct rule_entry *rule = NULL;
+    int found = 0;
 
 	/* Call netlink first. */
 	notifier = rcu_dereference(saved_event_cb);
@@ -241,7 +299,7 @@ static int snatpba_conntrack_event(unsigned int events, struct nf_ct_event *item
 		ret = notifier->fcn(events, item);
     
     if (!at_least_one_rule) {
-        printk(KERN_INFO "%s: not my connection\n", THIS_MODULE->name);
+        // printk(KERN_INFO "%s: not my connection\n", THIS_MODULE->name);
         return NOTIFY_DONE;
     }
 
@@ -260,40 +318,50 @@ static int snatpba_conntrack_event(unsigned int events, struct nf_ct_event *item
                         ntohl(rule->info.to_src.range->min_ip) && 
                         ntohl(ct_tuple2->dst.u3.ip) <=
                         ntohl(rule->info.to_src.range->max_ip)) {
-                // printk(KERN_INFO "%s: target --from-source: %pI4-%pI4, "
-                //                 "--to-source: %pI4-%pI4, "
-                //                 "--block-size: %u\n", THIS_MODULE->name, 
-                //             &mr->from_src.min_ip, &mr->from_src.max_ip,
-                //             &mr->to_src.range->min_ip, &mr->to_src.range->max_ip,
-                //             mr->block_size);
+
+                // printk(KERN_INFO "%s: tuple orig %p: %u %pI4:%hu -> %pI4:%hu\n",
+                //     THIS_MODULE->name, ct_tuple, ct_tuple->dst.protonum,
+                //     &ct_tuple->src.u3.ip, ntohs(ct_tuple->src.u.all),
+                //     &ct_tuple->dst.u3.ip, ntohs(ct_tuple->dst.u.all));
+                // printk(KERN_INFO "%s: tuple repl %p: %u %pI4:%hu -> %pI4:%hu\n",
+                //     THIS_MODULE->name, ct_tuple2, ct_tuple2->dst.protonum,
+                //     &ct_tuple2->src.u3.ip, ntohs(ct_tuple2->src.u.all),
+                //     &ct_tuple2->dst.u3.ip, ntohs(ct_tuple2->dst.u.all));
+
                 this_key = ct_tuple->src.u3.ip;
                 this_key = (this_key << 32) + ct_tuple->dst.u3.ip;
 
                 hash_for_each_possible(rule->rule_hashtable, hash_entry, node, this_key) {
                     if (hash_entry->key == this_key) {
-                        printk(KERN_INFO "%s: connection for src: %pI4, dst: %pI4 in hashtable.\n",
-                                THIS_MODULE->name, &ct_tuple->src.u3.ip, &ct_tuple->dst.u3.ip);
+                        // printk(KERN_INFO "%s: block for src: %pI4, dst: %pI4 in hashtable.\n",
+                        //         THIS_MODULE->name, &ct_tuple->src.u3.ip, &ct_tuple->dst.u3.ip);
+                        found = 1;
                         break;
                     }
                 }
 
-                if (events & (1 << IPCT_ASSURED)) {
-                    printk(KERN_INFO "%s: IPCT_ASSURED\n", THIS_MODULE->name);
+                if (found == 0) {
+                    printk(KERN_INFO "%s: did not found cell for tuple repl %p: %u %pI4:%hu -> %pI4:%hu\n",
+                        THIS_MODULE->name, ct_tuple2, ct_tuple2->dst.protonum,
+                        &ct_tuple2->src.u3.ip, ntohs(ct_tuple2->src.u.all),
+                        &ct_tuple2->dst.u3.ip, ntohs(ct_tuple2->dst.u.all));
+                        break;
+                }
 
-                    // TODO: lock
+                if (events & (1 << IPCT_ASSURED)) {
+                    // printk(KERN_INFO "%s: IPCT_ASSURED\n", THIS_MODULE->name);
+
                     if (hash_entry->block->free_ports > 0) {
                         hash_entry->block->free_ports--;
                     }
-                    // TODO: unlock
                 }
                 else if (events & (1 << IPCT_DESTROY)) {
-                    printk(KERN_INFO "%s: IPCT_DESTROY\n", THIS_MODULE->name);
+                    // printk(KERN_INFO "%s: IPCT_DESTROY\n", THIS_MODULE->name);
 
-                    // TODO: lock
-                    if (hash_entry->block->free_ports < 20) {
+                    if (hash_entry->block->free_ports < rule->info.block_size) {
                         hash_entry->block->free_ports++;
                     }
-                    else if (hash_entry->block->free_ports == 20) {
+                    else if (hash_entry->block->free_ports == rule->info.block_size) {
                         /** 
                          * This could occure when target is accepted,
                          * but the connection track somehow is not ACCEPTed
@@ -302,26 +370,17 @@ static int snatpba_conntrack_event(unsigned int events, struct nf_ct_event *item
                         del_conn_from_hashtable(rule, hash_entry);
                     }
 
-                    if (hash_entry->block->free_ports == 20) {
+                    if (hash_entry->block->free_ports == rule->info.block_size) {
                         del_conn_from_hashtable(rule, hash_entry);
                     }
                 }
-                // TODO: unlock
                 break;
             }
-            mutex_unlock(&data_lock);
             
         }
+        mutex_unlock(&data_lock);
 
     }
-    printk(KERN_INFO "%s: tuple %p: %u %pI4:%hu -> %pI4:%hu\n",
-	       THIS_MODULE->name, ct_tuple, ct_tuple->dst.protonum,
-	       &ct_tuple->src.u3.ip, ntohs(ct_tuple->src.u.all),
-	       &ct_tuple->dst.u3.ip, ntohs(ct_tuple->dst.u.all));
-    printk(KERN_INFO "%s: tuple %p: %u %pI4:%hu -> %pI4:%hu\n",
-	       THIS_MODULE->name, ct_tuple2, ct_tuple2->dst.protonum,
-	       &ct_tuple2->src.u3.ip, ntohs(ct_tuple2->src.u.all),
-	       &ct_tuple2->dst.u3.ip, ntohs(ct_tuple2->dst.u.all));
 
     return NOTIFY_DONE;
 }
@@ -378,10 +437,8 @@ static struct module *netlink_m;
 static void register_ct_events(void)
 {
 #define NETLINK_M "nf_conntrack_netlink"
-    printk(KERN_INFO "%s: enable.\n", THIS_MODULE->name);
 	mutex_lock(&events_lock);
 
-    printk(KERN_INFO "%s: tady", THIS_MODULE->name);
     if (!find_module(NETLINK_M)) {
         printk(KERN_INFO "%s: Loading " NETLINK_M "\n", THIS_MODULE->name);
         request_module(NETLINK_M);
@@ -439,6 +496,7 @@ xt_snatpba_target(struct sk_buff *skb, const struct xt_action_param *par) {
     struct hashtable_cell *curr = NULL;
     struct rule_entry *rule = NULL;
     struct iphdr *ip_header = (struct iphdr *)skb_network_header(skb);
+    unsigned long long this_key;
     // int ret;
 
     mutex_lock(&data_lock);
@@ -448,45 +506,50 @@ xt_snatpba_target(struct sk_buff *skb, const struct xt_action_param *par) {
             mr->to_src.range->min_ip && 
             rule->info.to_src.range->max_ip ==
             mr->to_src.range->max_ip) {
-                printk(KERN_INFO "%s: target --from-source: %pI4-%pI4, "
-                                "--to-source: %pI4-%pI4, "
-                                "--block-size: %u\n", THIS_MODULE->name, 
-                            &mr->from_src.min_ip, &mr->from_src.max_ip,
-                            &mr->to_src.range->min_ip, &mr->to_src.range->max_ip,
-                            mr->block_size);
-                printk(KERN_INFO "%s: target packet src: %pI4, dst:%pI4\n",
-                        THIS_MODULE->name, &ip_header->saddr, &ip_header->daddr);
+                // printk(KERN_INFO "%s: target --from-source: %pI4-%pI4, "
+                //                 "--to-source: %pI4-%pI4, "
+                //                 "--block-size: %u\n", THIS_MODULE->name, 
+                //             &mr->from_src.min_ip, &mr->from_src.max_ip,
+                //             &mr->to_src.range->min_ip, &mr->to_src.range->max_ip,
+                //             mr->block_size);
+                // printk(KERN_INFO "%s: target packet src: %pI4, dst:%pI4\n",
+                //         THIS_MODULE->name, &ip_header->saddr, &ip_header->daddr);
                 break;
             }
     }
 
-    unsigned long long this_key = ip_header->saddr;
+    this_key = ip_header->saddr;
 
-    printk(KERN_INFO "%s: prisel paket do targetu\n", THIS_MODULE->name);
-    printk(KERN_INFO "%s: %llu\n", THIS_MODULE->name, this_key);
     this_key = (this_key << 32) + ip_header->daddr;
-    printk(KERN_INFO "%s: %llu\n", THIS_MODULE->name, this_key);
 
     hash_for_each_possible(rule->rule_hashtable, curr, node, this_key) {
         if (curr->key == this_key) {
-            printk(KERN_INFO "%s: connection for src: %pI4, dst: %pI4 already in hashtable.\n",
-                    THIS_MODULE->name, &ip_header->saddr, &ip_header->daddr);
+            // printk(KERN_INFO "%s: TARGET: block for src: %pI4, dst: %pI4 already in hashtable.\n",
+            //         THIS_MODULE->name, &ip_header->saddr, &ip_header->daddr);
             break;
         }
     }
 
+    /* Not found cell for this connection in the hash table. */
     if (!curr) {
-        printk(KERN_INFO "%s: connection for src: %pI4, dst: %pI4 not in hashtable.\n",
-                    THIS_MODULE->name, &ip_header->saddr, &ip_header->daddr);
+        // printk(KERN_INFO "%s: TARGET: block for src: %pI4, dst: %pI4 not in hashtable.\n",
+        //             THIS_MODULE->name, &ip_header->saddr, &ip_header->daddr);
         
         curr = add_conn_to_hashtable(rule, ip_header->saddr, ip_header->daddr, this_key);
 
         if (!curr) {
+            /* Something is wrong with allocation. */
             kfree(curr);
-            return NF_DROP; // TODO: NF_ACCEPT or NF_DROP
+            mutex_unlock(&data_lock);
+            return NF_DROP;
         }
-        printk(KERN_INFO "%s: connection for key: %llu added into hashtable.\n",
-                        THIS_MODULE->name, curr->key);
+
+        printk(KERN_INFO "%s: add:%pI4:%pI4:%u-%u\n", THIS_MODULE->name, 
+                &ip_header->saddr, &curr->block->new_src.range->min_ip,
+                ntohs(curr->block->new_src.range->min.tcp.port),
+                ntohs(curr->block->new_src.range->max.tcp.port));
+        // printk(KERN_INFO "%s: connection for key: %llu added into hashtable.\n",
+        //                 THIS_MODULE->name, curr->key);
     }
 
 	ct = nf_ct_get(skb, &ctinfo);
@@ -494,9 +557,9 @@ xt_snatpba_target(struct sk_buff *skb, const struct xt_action_param *par) {
 		 (ctinfo == IP_CT_NEW || ctinfo == IP_CT_RELATED ||
 		  ctinfo == IP_CT_RELATED_REPLY)));
 
-    printk(KERN_INFO "%s: min ip: %pI4, max ip %pI4, min port: %u, max port: %u\n",
-            THIS_MODULE->name, &curr->block->new_src.range->min_ip, &curr->block->new_src.range->max_ip,
-            ntohs(curr->block->new_src.range->min.tcp.port), ntohs(curr->block->new_src.range->max.tcp.port));
+    // printk(KERN_INFO "%s: min ip: %pI4, max ip %pI4, min port: %u, max port: %u\n",
+    //         THIS_MODULE->name, &curr->block->new_src.range->min_ip, &curr->block->new_src.range->max_ip,
+    //         ntohs(curr->block->new_src.range->min.tcp.port), ntohs(curr->block->new_src.range->max.tcp.port));
             
 	xt_nat_convert_range(&range, &curr->block->new_src.range[0]);
 
@@ -520,7 +583,6 @@ static struct xt_target xt_snatpba_target_reg[] __read_mostly = {
 };
 
 static int __init xt_snatpba_init(void) {
-    printk(KERN_INFO "%s: Pred inicializaci notifieru.\n", THIS_MODULE->name);
     register_ct_events();
 
     printk(KERN_INFO "%s: Module initialized.\n", THIS_MODULE->name);
